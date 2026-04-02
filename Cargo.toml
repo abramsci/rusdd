@@ -1,0 +1,29 @@
+[package]
+name = "rusdd"
+version = "0.0.1"
+edition = "2024"
+authors = ["Sergei Abramenkov <abramsci@users.noreply.github.com>"]
+description = "Really Useful Secure Digital Dublicator"
+license = "MIT"
+repository = "https://github.com/abramsci/rusdd"
+homepage = "https://github.com/abramsci/rusdd"
+readme = "README.md"
+keywords = ["sd-card", "imaging", "dd", "data-backup"]
+categories = ["command-line-utilities", "filesystem"]
+exclude = [
+    ".github/*",
+    ".gitignore",
+]
+autobins = false
+default-run = "rusdd"
+
+[[bin]]
+name = "rusdd"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
