@@ -1,15 +1,42 @@
-//! rusdd - Really Useful Secure Digital Dublicator
+//! # rusdd - Really Useful Secure Digital Duplicator
 //!
 //! A simple tool for digitizing physical media into back-up images bit-by-bit.
 //! Built with the focus on usability: error logging, smart truncation, etc.
 //!
 //! Author: Sergei Abramenkov
 //! License: MIT
-//! Version: 0.0.1
+//! Version: 0.0.2
 //! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 use std::env;
 use std::path::PathBuf;
+
+const ARGUMENTS: &str = "
+Required arguments (must be named - not positional):
+  -d, --physical-drive <DRIVE>      Device identifier
+  -o, --output-path <PATH>          Output image file";
+
+const FLAGS: &str = "
+Flags (boolean toggles - false by default):
+  -h, --help                        Show extended help with examples
+  -f, --force                       Force overwrite output if exists
+  -t, --smart                       SmarT Truncation (after *empty chunk)
+                                      *consecutive 0x00 or 0xFF pattern";
+
+const PARAMS: &str = "
+Parameters (optional - rarely should be non-default):
+      --sector-size <N>             Physical sector size in bytes (default: 512)
+                                      Possible values: [512, 1024, 2048, 4096]
+      --chunk-size <N>              Sectors per *empty chunk (default: 16384)
+                                      Must be power of 2 (for efficiency)
+      --buffer-size <N>             Chunks per buffer (default: 4)
+                                      Must be power of 2 (defaults to 32 MiB)";
+
+/// Explicity does matter for eventual scaling
+enum HelpLevel {
+    Usage,
+    Extended,
+}
 
 /// Command line interface configuration
 struct Config {
@@ -20,6 +47,25 @@ struct Config {
     sector_size: u16, // Media physical sector size in bytes
     chunk_size: u16,  // Pattern-seeking chunk size in sectors
     buffer_size: u16, // Reading buffer size in chunks
+}
+
+/// Print help in STDERR so it would not pollute STDOUT
+fn print_help(level: HelpLevel) {
+    eprintln!("rusdd - Really Useful Secure Digital Duplicator");
+    eprintln!("\nUsage: rusdd [FLAGS] -d <DRIVE> -o <PATH> [PARAMS]");
+
+    match level {
+        HelpLevel::Usage => {
+            eprintln!("{}", ARGUMENTS);
+            eprintln!("{}", FLAGS);
+            eprintln!("Try 'rusdd -h' for more information.");
+        }
+        HelpLevel::Extended => {
+            eprintln!("{}", ARGUMENTS);
+            eprintln!("{}", FLAGS);
+            eprintln!("{}", PARAMS);
+        }
+    }
 }
 
 /// Enforcement for power of 2: shrinking parameter space + hidden optimization
@@ -39,6 +85,7 @@ where
 {
     let mut physical_drive = None;
     let mut output_path = None;
+    // Assigning defaults for flags and params
     let mut force = false; // Better safe than sorry (warn user)
     let mut smart = false; // Full drive image (forensic frendly)
     let mut sector_size: u16 = 512; // Typical physical sector size
@@ -69,6 +116,10 @@ where
                 let value = cli.next().ok_or("Missing --buffer-size value")?;
                 buffer_size = parse_size_param("buffer size", value)?;
             }
+            "--help" | "-h" => {
+                print_help(HelpLevel::Extended);
+                std::process::exit(0);
+            }
             _ => return Err(format!("Unknown argument: {}", arg)),
         }
     }
@@ -85,7 +136,12 @@ where
 }
 
 fn parse_cli() -> Result<Config, String> {
-    parse_cli_from_iter(env::args().skip(1))
+    if env::args().len() == 1 {
+        print_help(HelpLevel::Usage);
+        std::process::exit(0);
+    } else {
+        parse_cli_from_iter(env::args().skip(1))
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -95,11 +151,13 @@ fn run() -> Result<(), String> {
 
     // Program welcome - a header for CSV log in case of STDOUT redirection
     println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
-    println!("rusdd - Really Useful Secure Digital Dublicator (ver.0.0.1)");
+    println!("rusdd - Really Useful Secure Digital Duplicator (ver.0.0.2)");
     println!("Output Path: {}", cli.output_path.to_string_lossy());
     if cli.output_path.exists() && !cli.force {
         return Err(format!(
-            "Output file exists. Use --force to overwrite: {}",
+            "Output Path ({}) does already exist. \
+            Be careful to check it and back-up if needed. \
+            Then use --force flag if you sure to overwrite it.",
             cli.output_path.display()
         ));
     }
@@ -123,6 +181,13 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("[ERROR] {}", e);
+        std::process::exit(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,12 +204,5 @@ mod tests {
         let result = parse_size_param("test", "2077".to_string());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be power of 2"));
-    }
-}
-
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("[ERROR] {}", e);
-        std::process::exit(1);
     }
 }

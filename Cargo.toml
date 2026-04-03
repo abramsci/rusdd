@@ -1,14 +1,14 @@
 [package]
 name = "rusdd"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["Sergei Abramenkov <abramsci@users.noreply.github.com>"]
-description = "Really Useful Secure Digital Dublicator"
+description = "Really Useful Secure Digital Duplicator"
 license = "MIT"
 repository = "https://github.com/abramsci/rusdd"
 homepage = "https://github.com/abramsci/rusdd"
 readme = "README.md"
-keywords = ["sd-card", "imaging", "dd", "data-backup"]
+keywords = ["sd-card", "imaging", "dd", "data-backup-tool"]
 categories = ["command-line-utilities", "filesystem"]
 exclude = [
     ".github/*",
