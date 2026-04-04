@@ -5,10 +5,12 @@
 //!
 //! Author: Sergei Abramenkov
 //! License: MIT
-//! Version: 0.0.2
+//! Version: 0.0.3
 //! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 use std::env;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 const ARGUMENTS: &str = "
@@ -151,7 +153,7 @@ fn run() -> Result<(), String> {
 
     // Program welcome - a header for CSV log in case of STDOUT redirection
     println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
-    println!("rusdd - Really Useful Secure Digital Duplicator (ver.0.0.2)");
+    println!("rusdd - Really Useful Secure Digital Duplicator (ver.0.0.3)");
     println!("Output Path: {}", cli.output_path.to_string_lossy());
     if cli.output_path.exists() && !cli.force {
         return Err(format!(
@@ -176,7 +178,33 @@ fn run() -> Result<(), String> {
     println!("************************************************************");
 
     // Actual logic of the imaging physical device into a file bit-by-bit
-    // ...
+    let mut source = File::open(&cli.physical_drive)
+        .map_err(|e| format!("Cannot open {}: {}", cli.physical_drive, e))?;
+    let mut destination = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&cli.output_path)
+        .map_err(|e| format!("Failed {}: {}", cli.output_path.display(), e))?;
+    let mut buf = vec![0u8; buffer];
+
+    // Starting small - read and write only one buffer
+    let bytes_read = source
+        .read(&mut buf)
+        .map_err(|e| format!("Read error: {}", e))?;
+    if bytes_read == 0 {
+        return Err("Source device is empty".to_string());
+    }
+    eprintln!("Read {} bytes", bytes_read);
+    destination
+        .write_all(&buf[..bytes_read])
+        .map_err(|e| format!("Write error: {}", e))?;
+    println!("************************************************************");
+    println!(
+        "Successfully wrote {} bytes to {}",
+        bytes_read,
+        cli.output_path.display()
+    );
 
     Ok(())
 }
