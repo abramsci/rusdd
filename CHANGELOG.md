@@ -1,5 +1,16 @@
 ## [0.0.x] - initial development phase
 
+### [0.0.4] - 2026-04-05
++ Info display enhancements and some logic simplification:
+  + `print_help()` moved into `display()` implementation for `HelpLevel`
+  + `print_cli()` moved into `display()` implementation for `Config`
+  + `calc_sizes()` helper function
+* Removed `--force` flag entirely (better not to have option to screw youself)
+* Rework of required arguments for versatility (potential bidirectional):
+  * `--physical-drive` & `--output-path` => `--source` & `--destination`
+  * `Location` enum (`Drive(String)` and `Image(PathBuf)`) with implementaion:
+    * `from_str(..)`, `display()`, `open_for_read()`, `open_for_write()`
+
 ### [0.0.3] - 2026-04-04
 * Field-test for a micro-SD card on Windows platform:
   * `.\target\debug\rusdd.exe --physical-drive \\.\PHYSICALDRIVE3 --output-path output-test.dd`
