@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 const ARGUMENTS: &str = "
 Required arguments (must be named - not positional):
-  -s, --source <TARGET>             What to image
-  -d, --destination <TARGET>        Where to put";
+  -s, --source <LOCATION>           What to image
+  -d, --destination <LOCATION>      Where to put";
 
 const FLAGS: &str = "
 Flags (boolean toggles - false by default):
@@ -42,7 +42,7 @@ enum HelpLevel {
 impl HelpLevel {
     fn display(&self) {
         println!("rusdd - Really Useful Secure Digital Duplicator");
-        println!("\nUsage: rusdd [FLAGS] -d <DRIVE> -o <PATH> [PARAMS]");
+        println!("\nUsage: rusdd [FLAGS] -s <SOURCE> -d <DEST> [PARAMS]");
         match self {
             HelpLevel::Usage => {
                 println!("{}", ARGUMENTS);
