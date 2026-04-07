@@ -238,6 +238,43 @@ fn parse_cli() -> Result<Config, String> {
     }
 }
 
+struct FailedRegion {
+    offset: u64, // Byte offset from start
+    size: usize, // Size in bytes (buffer_size, then chunk_size, then sector_size)
+}
+
+/// Pass 1: Optimistic - full buffer reads
+/// Returns: Vec of failed regions (offsets and sizes)
+fn copy_optimistic(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    config: &Config,
+) -> Result<Vec<FailedRegion>, String> {
+    // Returns offsets where buffer reads failed
+}
+
+/// Pass 2: Realistic - chunk-sized reads for failed buffers
+/// Modifies dest in-place, returns failed chunk offsets
+fn copy_realistic(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    config: &Config,
+    failures: &[FailedRegion],
+) -> Result<Vec<FailedRegion>, String> {
+    // Returns failed chunk regions within the failed buffers
+}
+
+/// Pass 3: Forensic - sector-by-sector for failed chunks
+/// Fills unrecoverable sectors with pattern, logs to CSV
+fn copy_forensic(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    config: &Config,
+    failures: &[FailedRegion],
+) -> Result<(), String> {
+    // No return - any remaining failures get filled with the pattern
+}
+
 fn run() -> Result<(), String> {
     let cli = parse_cli()?;
     cli.display();
@@ -245,26 +282,41 @@ fn run() -> Result<(), String> {
     // Actual logic of the imaging physical device into a file bit-by-bit
     let mut source = cli.source.open_for_read()?;
     let mut destination = cli.destination.open_for_write()?;
-    let (_, _, buffer_size) = cli.calc_sizes();
-    let mut buffer = vec![0u8; buffer_size];
 
-    // Starting small - read and write only one buffer
-    let bytes_read = source
-        .read(&mut buffer)
-        .map_err(|e| format!("Read error: {}", e))?;
-    if bytes_read == 0 {
-        return Err("Source device is empty".to_string());
+    // Pass 1: Optimistic
+    eprintln!("Pass 1/3: Optimistic copy (buffer-sized I/O)");
+    let failures = copy_optimistic(&mut source, &mut destination, &cli)?;
+
+    if failures.is_empty() {
+        eprintln!("Complete: No errors detected");
+        return Ok(());
     }
-    eprintln!("Read {} bytes", bytes_read);
-    destination
-        .write_all(&buffer[..bytes_read])
-        .map_err(|e| format!("Write error: {}", e))?;
-    println!("***********************************************************");
-    println!(
-        "Successfully wrote {} bytes to {}",
-        bytes_read,
-        cli.destination.display()
+
+    eprintln!("Pass 1 complete. {} failed regions.", failures.len());
+
+    // Pass 2: Chunk recovery
+    eprintln!("Pass 2/3: Chunk-level recovery");
+    let chunk_failures = copy_realistic(&mut source, &mut destination, &cli, &failures)?;
+    if chunk_failures.is_empty() {
+        eprintln!("Complete: All regions recovered");
+        return Ok(());
+    }
+    eprintln!(
+        "Pass 2 complete. {} chunks still failing.",
+        chunk_failures.len()
     );
+
+    // Pass 3: Sector forensic
+    eprintln!("Pass 3/3: Sector-level forensic recovery");
+    copy_forensic(&mut source, &mut destination, &cli, &chunk_failures)?;
+
+    println!("***********************************************************");
+    // println!(
+    //     "Successfully wrote {} bytes to {}",
+    //     bytes_read,
+    //     cli.destination.display()
+    // );
+    eprintln!("Copy complete. Unrecoverable sectors filled with the pattern.");
 
     Ok(())
 }

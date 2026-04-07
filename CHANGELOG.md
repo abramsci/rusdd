@@ -1,5 +1,14 @@
 ## [0.0.x] - initial development phase
 
+### [0.0.x] - 2026-04-07
+* Rework of the core workflow function (`run()`)
++ Struct do describe regions where reading failed
++ Function signatures for three-pass imaging process at high-level:
+  + `copy_optimistic(..)` - buffer-sized pass (only signature)
+  + `copy_realistic(..)` - chunk-sized pass (only signature)
+  + `copy_forensic(..)` - sector-sized pass (only signature)
+* Fixed string with usage pattern in program welcome (2026-04-06 commit)
+
 ### [0.0.4] - 2026-04-05
 + Info display enhancements and some logic simplification:
   + `print_help()` moved into `display()` implementation for `HelpLevel`
