@@ -5,33 +5,39 @@
 //!
 //! Author: Sergei Abramenkov
 //! License: MIT
-//! Version: 0.0.4
+//! Version: 0.0.5
 //! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 use std::env;
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::time::Instant;
 
+// -------------------------- PROGRAM USAGE AND HELP --------------------------
 const ARGUMENTS: &str = "
-Required arguments (must be named - not positional):
-  -s, --source <LOCATION>           What to image
-  -d, --destination <LOCATION>      Where to put";
+Major arguments (must be named - not positional):
+  -s, --source <LOCATION>           What to image (drive or file) [required]
+  -d, --destination <LOCATION>      Where to put (file or drive)";
 
 const FLAGS: &str = "
 Flags (boolean toggles - false by default):
   -h, --help                        Show extended help with examples
-  -t, --smart                       SmarT Truncation (after *empty chunk)
-                                      *consecutive 0x00 or 0xFF pattern";
+  -i, --inspect                     Only inspect and print source layout
+  -t, --truncate                    Truncate trailing same-byte patterns";
 
 const PARAMS: &str = "
-Parameters (optional - rarely should be non-default):
-      --sector-size <N>             Physical sector size in bytes (default: 512)
-                                      Possible values: [512, 1024, 2048, 4096]
-      --chunk-size <N>              Sectors per *empty chunk (default: 16384)
-                                      Must be power of 2 (for efficiency)
-      --buffer-size <N>             Chunks per buffer (default: 4)
-                                      Must be power of 2 (defaults to 32 MiB)";
+Parameters (optional):
+      --limit-size <N>              Limit size (drive capacity hint)
+      --chunk-size <N>              Reading block size (default: 32MiB)
+                                    Must be power of 2 (for efficiency)
+      --sector-size <N>             Physical sector size to read in bytes
+                                    Possible values: [512, 1024, 2048, 4096]
+                                    Enables recovery mode if provided";
+const UNITS: &str = "
+Note: --limit-size and --chunk-size accept unit suffixes (binary):
+      B (bytes), K/KiB (1024 B), M/MiB (1024^2 B), G/GiB (1024^3 B)
+      Examples: 512B, 256KiB, 32M, 4GiB";
 
 /// Explicity does matter for eventual scaling
 enum HelpLevel {
@@ -53,11 +59,253 @@ impl HelpLevel {
                 println!("{}", ARGUMENTS);
                 println!("{}", FLAGS);
                 println!("{}", PARAMS);
+                println!("{}", UNITS);
             }
         }
     }
 }
 
+fn cli_error(msg: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, msg)
+}
+
+fn missing(arg: &str) -> io::Error {
+    cli_error(&format!("Missign --{} value", arg))
+}
+
+fn invalid(name: &str, value: &str) -> io::Error {
+    cli_error(&format!("Invalid {} format: {}", name, value))
+}
+
+/// Command line interface configuration
+struct Config {
+    source: Location,
+    destination: Location,
+    inspect: bool,            // Only inspect source without imaging?
+    truncate: bool,           // Is trailing-empty trancation enabled?
+    limit_size: u64,          // Physical drive hint (default: 32GiB)
+    chunk_size: u64,          // Logical granularity (default: 32MiB)
+    sector_size: Option<u16>, // None = no recovery mode
+}
+
+impl Config {
+    /// Program welcome message (a header in case of STDOUT redirection)
+    fn display(&self) {
+        println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
+        println!("rusdd - Really Useful Secure Digital Duplicator (ver.0.0.5)");
+        println!("IMAGING FROM: {}", self.source.display());
+        println!("  Read limit: {}", self.limit_size);
+        println!("  Chunk size: {}", self.chunk_size);
+        println!("  Inspection: {}", if self.inspect { "ON" } else { "OFF" });
+        println!("  Truncation: {}", if self.truncate { "ON" } else { "OFF" });
+        println!("IMAGING INTO: {}", self.destination.display());
+        println!("***********************************************************");
+    }
+
+    fn parse_size_with_unit(name: &str, value: &str) -> io::Result<u64> {
+        let input = value.trim();
+        // Split number from suffix
+        let num_str = input
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>();
+        let suffix = &input[num_str.len()..].to_uppercase();
+        let num: u64 = num_str.parse().map_err(|_| invalid(name, &num_str))?;
+        // Convert to number of bytes
+        let bytes = match suffix.as_str() {
+            "" | "B" => num,
+            "K" | "KB" | "KiB" => num * 1024,
+            "M" | "MB" | "MiB" => num * 1024 * 1024,
+            "G" | "GB" | "GiB" => num * 1024 * 1024 * 1024,
+            _ => {
+                return Err(cli_error(&format!("Unknown unit for {}: {}", name, suffix)));
+            }
+        };
+        // Enforcement for power of 2: shrink param space -> hidden optimization
+        if !bytes.is_power_of_two() {
+            return Err(cli_error(&format!(
+                "{} must be power of two but got {}",
+                name, bytes
+            )));
+        }
+        Ok(bytes)
+    }
+
+    fn parse_cli_from_iter<I>(mut cli: I) -> io::Result<Self>
+    where
+        I: Iterator<Item = String>,
+    {
+        let mut source = Location::Void;
+        let mut destination = Location::Void;
+        // Assigning defaults for flags and params
+        let mut inspect = false;
+        let mut truncate = false; // Full drive image (forensic frendly)
+        let mut limit: u64 = 32 * 1024 * 1024 * 1024; // => 32 GiB
+        let mut chunk: u64 = 32 * 1024 * 1024; // 32 MiB (33_554_432 bytes)
+        let mut sector: Option<u16> = None; // No sector-level recovery
+
+        while let Some(arg) = cli.next() {
+            match arg.as_str() {
+                "--source" | "-s" => {
+                    let value = cli.next().ok_or_else(|| missing("source"))?;
+                    source = Location::from_str(value);
+                }
+                "--destination" | "-d" => {
+                    let v = cli.next().ok_or_else(|| missing("destination"))?;
+                    destination = Location::from_str(v);
+                }
+                "--inspect" | "-i" => inspect = true,
+                "--truncate" | "-t" => truncate = true,
+                "--limit-size" => {
+                    let v = cli.next().ok_or_else(|| missing("limit-size"))?;
+                    limit = Self::parse_size_with_unit("limit size", &v)?;
+                }
+                "--chunk-size" => {
+                    let v = cli.next().ok_or_else(|| missing("chunk-size"))?;
+                    chunk = Self::parse_size_with_unit("chunk size", &v)?;
+                }
+                "--sector-size" => {
+                    let v = cli.next().ok_or_else(|| missing("sector-size"))?;
+                    let size = Self::parse_size_with_unit("sector size", &v)?;
+                    match size {
+                        512 | 1024 | 2048 | 4096 => sector = Some(size as u16),
+                        _ => return Err(invalid("sector size", &v)),
+                    }
+                }
+                "--help" | "-h" => {
+                    HelpLevel::Extended.display();
+                    std::process::exit(0);
+                }
+                _ => return Err(cli_error(&format!("Unknown arg: {}", arg))),
+            }
+        }
+        // Terminate with InvalidInput if source (required arg) was not provided
+        if matches!(source, Location::Void) {
+            return Err(cli_error("--source is required"));
+        }
+        // In non-inspection mode - destination also must be provided
+        if !inspect && matches!(destination, Location::Void) {
+            return Err(cli_error("--destination is requied unless --inspect"));
+        }
+        Ok(Self {
+            source,
+            destination,
+            inspect,
+            truncate,
+            limit_size: limit,
+            chunk_size: chunk,
+            sector_size: sector,
+        })
+    }
+
+    fn parse_cli() -> io::Result<Self> {
+        if env::args().len() == 1 {
+            HelpLevel::Usage.display();
+            std::process::exit(0);
+        } else {
+            Self::parse_cli_from_iter(env::args().skip(1))
+        }
+    }
+}
+
+// -------------------------- AUXILIARY FUNCTIONS --------------------------
+/// Heuristic EOF is chosen due to Windows behaivor with different media.
+/// During testing USB 3.0 flash drive essentially EOFed with code 27
+/// but SD-card USB 2.0 reader had reached EOF-like end with code 23.
+/// Since for the time being I want to limit myself to stdlib only
+/// this is a scrapy but high-XP gain way to learn and build.
+/// EOF heuristics so far:
+///   1. Errors at the same offset (drive stuck)
+///   2. Eight consecutive errors (threshold - likely end of drive)
+struct EofDetector {
+    saturation: u32,
+    last_code: Option<i32>,
+    last_offset: u64,
+}
+impl EofDetector {
+    const MAX_SATURATION: u32 = 8; // Bad chunks in a row means we done
+
+    fn new() -> Self {
+        EofDetector {
+            saturation: 0,
+            last_code: None,
+            last_offset: 0,
+        }
+    }
+
+    /// Record an error, then return true if EOF is detected
+    fn reading_error(&mut self, error: &io::Error, offset: u64) -> bool {
+        let code = error.raw_os_error();
+        // Drive stuck - same error at same offset?
+        let same_offset = offset == self.last_offset;
+        if self.last_code == code || same_offset {
+            self.saturation += 1;
+        } else {
+            self.saturation = 1;
+            self.last_code = code;
+            self.last_offset = offset;
+        }
+        let is_eof = self.saturation >= Self::MAX_SATURATION;
+        if is_eof {
+            eprintln!("\n[HEURISTIC] EOF detected at offset {}", offset);
+            eprintln!("[HEURISTIC] {} errors: {:?}", self.saturation, code);
+        }
+        is_eof
+    }
+
+    /// Reset error saturation and last code but keep last offset
+    fn reading_success(&mut self) {
+        self.saturation = 0;
+        self.last_code = None;
+    }
+}
+
+/// Imaging can be long (with USB 2.0) so progress traking is essential
+struct ProgressTracker {
+    next_report: u64,
+    report_interval: u64,
+    start_time: Instant,
+    last_offset: u64,
+}
+impl ProgressTracker {
+    fn new(report_interval_bytes: u64) -> Self {
+        ProgressTracker {
+            next_report: report_interval_bytes,
+            report_interval: report_interval_bytes,
+            start_time: Instant::now(),
+            last_offset: 0,
+        }
+    }
+
+    fn update(&mut self, offset: u64) {
+        if offset >= self.next_report {
+            let elapsed = self.start_time.elapsed();
+            let scanned = offset / (1024 * 1024);
+            let speed = if elapsed.as_secs() > 0 {
+                (offset as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+            } else {
+                0.0
+            };
+            eprint!(
+                "\rScanned: {} MiB | Speed {:.1} MiB/s | Time {:?}",
+                scanned, speed, elapsed
+            );
+            self.next_report += self.report_interval;
+            self.last_offset = offset;
+        }
+    }
+
+    fn finish(&self, offset: u64) {
+        let elapsed = self.start_time.elapsed();
+        let scanned = offset / (1024 * 1024);
+        eprint!(
+            "\rScanned: {} MiB complete! | Time elapsed total {:?}",
+            scanned, elapsed
+        );
+    }
+}
+
+// -------------------------- CORE DATA STRUCTURES --------------------------
 /// A higher level abstraction useful for better versatility
 /// "Imagine" this tool could be eventually used for both:
 ///   (A) imaging some SD-card from a datalogger to HDD backup as a file
@@ -67,60 +315,37 @@ impl HelpLevel {
 enum Location {
     Drive(String),  // Actual drive: "\\.\PHYSICALDRIVE3" or /dev/sdc
     Image(PathBuf), // Image file: "sd-card.dd"
+    Void,           // Destination (ignored) in the inspection mode
 }
 
 impl Location {
-    fn from_str(way: String) -> Location {
+    fn from_str(way: String) -> Self {
         #[cfg(target_os = "windows")]
         {
             if way.starts_with("\\\\.\\") {
                 return Location::Drive(way);
             }
         }
-
         #[cfg(target_family = "unix")]
         {
             if way.starts_with("/dev/") {
                 return Location::Drive(way);
             }
         }
-
         Location::Image(PathBuf::from(way))
     }
 
-    fn open_for_read(&self) -> Result<impl Read, String> {
+    fn open_for_read(&self) -> io::Result<File> {
         match self {
-            Location::Drive(way) => OpenOptions::new()
-                .read(true)
-                .open(way)
-                .map_err(|e| format!("Open drive {} for read: {}", way, e)),
-            Location::Image(way) => OpenOptions::new()
-                .read(true)
-                .open(way)
-                .map_err(|e| format!("Open {} for read: {}", way.display(), e)),
-        }
-    }
-
-    fn open_for_write(&self) -> Result<impl Write, String> {
-        match self {
-            Location::Drive(way) => OpenOptions::new()
-                .write(true)
-                .open(way)
-                .map_err(|e| format!("Open drive {} for write: {}", way, e)),
+            Location::Drive(way) => OpenOptions::new().read(true).open(way),
             Location::Image(way) => {
-                if way.exists() {
-                    return Err(format!(
-                        "File ({}) already exist. Check and move (delete) it.",
-                        way.display()
-                    ));
-                }
-                OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(way)
-                    .map_err(|e| format!("Cannot create image file: {}", e))
+                let path = way.to_str().expect("Invalid symbol in image path");
+                OpenOptions::new().read(true).open(path)
             }
+            Location::Void => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Must not open Void Location",
+            )),
         }
     }
 
@@ -128,221 +353,258 @@ impl Location {
         match self {
             Location::Drive(way) => format!("{} (drive)", way),
             Location::Image(way) => format!("{} (file)", way.display()),
+            Location::Void => format!("NONE (void)"),
         }
     }
 }
 
-/// Command line interface configuration
-struct Config {
-    source: Location,
-    destination: Location,
-    smart: bool,      // Is smart stop trancation enabled?
-    sector_size: u16, // Media physical sector size in bytes
-    chunk_size: u16,  // Pattern-seeking chunk size in sectors
-    buffer_size: u16, // Reading buffer size in chunks
+/// Byte buffer status
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Status {
+    Good, // Readable, reasonable, respectable
+    Bad,  // Error in reading attempt (CRC-like)
+    Ugly, // Full of the same byte pattern (ex. 0x00 or 0xFF)
 }
-
-impl Config {
-    fn calc_sizes(&self) -> (usize, usize, usize) {
-        let sector: usize = self.sector_size as usize;
-        let chunk: usize = (self.chunk_size as usize) * sector;
-        let buffer: usize = (self.buffer_size as usize) * chunk;
-        (sector, chunk, buffer)
-    }
-
-    // Program welcome message (a header in case of STDOUT redirection)
-    fn display(&self) {
-        let (sector, chunk, buffer) = self.calc_sizes();
-        println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
-        println!("rusdd - Really Useful Secure Digital Duplicator (ver.0.0.4)");
-        println!("Source:       {}", self.source.display());
-        println!("Destination:  {}", self.destination.display());
-        println!("Smart mode:   {}", if self.smart { "ON" } else { "OFF" });
-        println!("Sector size: {} bytes", sector);
-        println!("Chunk size: {} KiB", chunk / 1024);
-        println!("Buffer size: {} MiB", buffer / 1024 / 1024);
-        println!("***********************************************************");
+impl From<&[u8]> for Status {
+    fn from(buf: &[u8]) -> Self {
+        if buf.is_empty() {
+            return Status::Good;
+        }
+        let byte = buf[0];
+        let all_same = buf.iter().all(|&b| b == byte);
+        if all_same { Status::Ugly } else { Status::Good }
     }
 }
+impl Status {
+    const PLACEHOLDER: u32 = 0xBECAFEDA;
+    const BAD_UNKNOWN: u32 = 0xDEADCEEB;
 
-/// Enforcement for power of 2: shrinking parameter space + hidden optimization
-fn parse_size_param(name: &str, value: String) -> Result<u16, String> {
-    let parsed: u16 = value
-        .parse()
-        .map_err(|_| format!("Invalid {}: {}", name, value))?;
-    if !parsed.is_power_of_two() {
-        return Err(format!("{} must be power of 2", name));
-    }
-    Ok(parsed)
-}
-
-fn parse_cli_from_iter<I>(mut cli: I) -> Result<Config, String>
-where
-    I: Iterator<Item = String>,
-{
-    let mut source = None;
-    let mut destination = None;
-    // Assigning defaults for flags and params
-    let mut smart = false; // Full drive image (forensic frendly)
-    let mut sector_size: u16 = 512; // Typical physical sector size
-    let mut chunk_size: u16 = 16384; // => 8 MiB (8_589_934_592 bytes)
-    let mut buffer_size: u16 = 4; // => 32 MiB (34_359_738_368 bytes)
-
-    while let Some(arg) = cli.next() {
-        match arg.as_str() {
-            "--source" | "-s" => {
-                let value = cli.next().ok_or("Missing --source value")?;
-                source = Some(Location::from_str(value));
-            }
-            "--destination" | "-d" => {
-                let value = cli.next().ok_or("Missing --destination value")?;
-                destination = Some(Location::from_str(value));
-            }
-            "--smart" | "-t" => smart = true,
-            "--sector-size" => {
-                let value = cli.next().ok_or("Missing --sector-size value")?;
-                sector_size = parse_size_param("sector size", value)?;
-            }
-            "--chunk-size" => {
-                let value = cli.next().ok_or("Missing --chunk-size value")?;
-                chunk_size = parse_size_param("chunk size", value)?;
-            }
-            "--buffer-size" => {
-                let value = cli.next().ok_or("Missing --buffer-size value")?;
-                buffer_size = parse_size_param("buffer size", value)?;
-            }
-            "--help" | "-h" => {
-                HelpLevel::Extended.display();
-                std::process::exit(0);
-            }
-            _ => return Err(format!("Unknown argument: {}", arg)),
+    fn essence_from_buffer(&self, buf: &[u8]) -> u32 {
+        match self {
+            Status::Good => Self::PLACEHOLDER,
+            Status::Bad => Self::BAD_UNKNOWN,
+            Status::Ugly => (buf[0] as u32) * 0x01010101,
         }
     }
-
-    Ok(Config {
-        source: source.ok_or("--source is required")?,
-        destination: destination.ok_or("--destination is required")?,
-        smart,
-        sector_size: sector_size,
-        chunk_size: chunk_size,
-        buffer_size: buffer_size,
-    })
 }
 
-fn parse_cli() -> Result<Config, String> {
-    if env::args().len() == 1 {
-        HelpLevel::Usage.display();
-        std::process::exit(0);
-    } else {
-        parse_cli_from_iter(env::args().skip(1))
+/// Continuous block with the same status
+#[derive(Clone, Debug)]
+struct Segment {
+    offset: u64,  // Byte offset in the source
+    length: u64,  // Length in bytes
+    essence: u32, // Checksum (Good), error code (Bad) or pattern (Ugly)
+    status: Status,
+    last: bool,
+    // 2-byte padding - room for more usable info
+}
+
+/// Location (memory) structure as a vector of continuous blocks
+struct Layout {
+    stride: u64,
+    segments: Vec<Segment>,
+}
+impl Layout {
+    /// Scanning function to figure out location layout
+    fn scan(
+        location: &mut (impl Read + Seek),
+        stride: u64,
+        limit: Option<u64>,
+    ) -> io::Result<Self> {
+        let mut segments = Vec::new();
+        let mut buf = vec![0u8; stride as usize];
+        let mut offset = 0u64;
+        let mut current: Option<Segment> = None;
+        let limit = limit.unwrap_or(u64::MAX);
+        let mut eof = EofDetector::new();
+        // Progress reporing each 64 MiB
+        let mut progress = ProgressTracker::new(64 * 1024 * 1024);
+        // A simplistic idea - looping over location step-by-step
+        while offset < limit {
+            let step = std::cmp::min(stride, limit - offset) as usize;
+            let mut bytes_read = step as u64;
+            let essence;
+            progress.update(offset);
+            // Actual reading attempt
+            let status = match location.read_exact(&mut buf[..step]) {
+                // Success - full step was read
+                Ok(()) => {
+                    eof.reading_success();
+                    Status::from(&buf[..step])
+                }
+                // Legit filesystem end of file
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    // Partial read at the end of location
+                    let actual = location.read(&mut buf[..step])?;
+                    if actual == 0 {
+                        break;
+                    }
+                    bytes_read = actual as u64;
+                    Status::from(&buf[..actual])
+                }
+                // Reading errors (bad sectors) - using heuristics
+                Err(e) => {
+                    if eof.reading_error(&e, offset) {
+                        break;
+                    }
+                    location.seek(SeekFrom::Current(step as i64))?;
+                    Status::Bad
+                }
+            };
+            essence = status.essence_from_buffer(&buf[..bytes_read as usize]);
+            // Segment accumulation
+            match &mut current {
+                // Extending the current segment
+                Some(seg) if seg.status == status && seg.essence == essence => {
+                    seg.length += bytes_read as u64;
+                }
+                // Status changed -> taking ownership to push completed segment
+                Some(_) => {
+                    let completed = current.take().unwrap();
+                    segments.push(completed);
+                    // Initializing a new one
+                    current = Some(Segment {
+                        offset,
+                        length: bytes_read as u64,
+                        essence,
+                        status,
+                        last: false,
+                    });
+                }
+                // No current segment (just starting) -> making a new one
+                None => {
+                    current = Some(Segment {
+                        offset,
+                        length: bytes_read as u64,
+                        essence,
+                        status,
+                        last: false,
+                    });
+                }
+            }
+            offset += bytes_read as u64;
+            if offset >= limit {
+                break;
+            }
+        }
+        progress.finish(offset);
+        if let Some(mut seg) = current {
+            seg.last = true;
+            segments.push(seg);
+        }
+        Ok(Layout { stride, segments })
+    }
+
+    /// Figuring out effective stop point for the segmented layout
+    /// Using reverse iteration (go backwards) to truncate the Ugly tail
+    /// Therefore we look for the first segment that is not Ugly
+    fn truncation_point(&self) -> u64 {
+        let mut end = self
+            .segments
+            .last()
+            .map(|s| s.offset + s.length)
+            .unwrap_or(0);
+        for seg in self.segments.iter().rev() {
+            if seg.status != Status::Ugly {
+                end = seg.offset + seg.length;
+            }
+        }
+        end
+    }
+
+    /// Printing location layout as CSV-lines
+    fn print_csv(&self) {
+        for seg in self.segments.iter() {
+            let comment = match seg.status {
+                Status::Good => format!("'readable data'"),
+                Status::Bad => format!("'error reading'"),
+                Status::Ugly => format!("'bit-pattern: 0x{:08X}'", seg.essence),
+            };
+            println!("{},{},{}", seg.offset, seg.length, comment);
+        }
     }
 }
 
-struct FailedRegion {
-    offset: u64, // Byte offset from start
-    size: usize, // Size in bytes (buffer_size, then chunk_size, then sector_size)
-}
-
-/// Pass 1: Optimistic - full buffer reads
-/// Returns: Vec of failed regions (offsets and sizes)
-fn copy_optimistic(
-    source: &mut impl Read,
-    destination: &mut impl Write,
-    config: &Config,
-) -> Result<Vec<FailedRegion>, String> {
-    // Returns offsets where buffer reads failed
-}
-
-/// Pass 2: Realistic - chunk-sized reads for failed buffers
-/// Modifies dest in-place, returns failed chunk offsets
-fn copy_realistic(
-    source: &mut impl Read,
-    destination: &mut impl Write,
-    config: &Config,
-    failures: &[FailedRegion],
-) -> Result<Vec<FailedRegion>, String> {
-    // Returns failed chunk regions within the failed buffers
-}
-
-/// Pass 3: Forensic - sector-by-sector for failed chunks
-/// Fills unrecoverable sectors with pattern, logs to CSV
-fn copy_forensic(
-    source: &mut impl Read,
-    destination: &mut impl Write,
-    config: &Config,
-    failures: &[FailedRegion],
-) -> Result<(), String> {
-    // No return - any remaining failures get filled with the pattern
-}
-
-fn run() -> Result<(), String> {
-    let cli = parse_cli()?;
+// -------------------------- HIGH-LEVEL WORKFLOW --------------------------
+/// Actual logic of the imaging source into destination bit-by-bit
+fn run(cli: &Config) -> io::Result<()> {
+    // Workflow welcome displaying config we dealing with
     cli.display();
-
-    // Actual logic of the imaging physical device into a file bit-by-bit
-    let mut source = cli.source.open_for_read()?;
-    let mut destination = cli.destination.open_for_write()?;
-
-    // Pass 1: Optimistic
-    eprintln!("Pass 1/3: Optimistic copy (buffer-sized I/O)");
-    let failures = copy_optimistic(&mut source, &mut destination, &cli)?;
-
-    if failures.is_empty() {
-        eprintln!("Complete: No errors detected");
-        return Ok(());
-    }
-
-    eprintln!("Pass 1 complete. {} failed regions.", failures.len());
-
-    // Pass 2: Chunk recovery
-    eprintln!("Pass 2/3: Chunk-level recovery");
-    let chunk_failures = copy_realistic(&mut source, &mut destination, &cli, &failures)?;
-    if chunk_failures.is_empty() {
-        eprintln!("Complete: All regions recovered");
-        return Ok(());
-    }
+    // Pass 0 - source Location inspection
+    let stride = cli.chunk_size;
+    let mut src = cli.source.open_for_read()?;
+    eprintln!("Inspecting source layout...");
+    let src_layout = Layout::scan(&mut src, stride, None)?;
+    src.rewind()?; // Return to position 0 before forgetting about it!
     eprintln!(
-        "Pass 2 complete. {} chunks still failing.",
-        chunk_failures.len()
+        "... complete. Segments found: {}",
+        src_layout.segments.len()
     );
-
-    // Pass 3: Sector forensic
-    eprintln!("Pass 3/3: Sector-level forensic recovery");
-    copy_forensic(&mut source, &mut destination, &cli, &chunk_failures)?;
-
+    // Truncation and operational mode decisions
+    let stop = src_layout.truncation_point();
+    eprintln!("Effective stop point: {}", stop);
+    if cli.inspect {
+        src_layout.print_csv();
+        eprintln!("Inspection mode - no writes performed");
+        return Ok(());
+    }
+    // Pass 1 - copy Good and Ugly segments
+    // TO BE IMPLEMENTED
+    // Pass 2 - forensic sector-by-sector recovery of Bad segments
+    // TO BE IMPLEMENTED
     println!("***********************************************************");
-    // println!(
-    //     "Successfully wrote {} bytes to {}",
-    //     bytes_read,
-    //     cli.destination.display()
-    // );
-    eprintln!("Copy complete. Unrecoverable sectors filled with the pattern.");
-
     Ok(())
 }
 
 fn main() {
-    if let Err(e) = run() {
+    let cli = Config::parse_cli().unwrap();
+    if let Err(e) = run(&cli) {
         eprintln!("[ERROR] {}", e);
         std::process::exit(1);
     }
 }
 
+// -------------------------------- UNIT TESTS --------------------------------
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
 
     #[test]
-    fn test_parse_size_param_power_of_two() {
-        assert_eq!(parse_size_param("test", "512".to_string()), Ok(512));
-        assert_eq!(parse_size_param("test", "1024".to_string()), Ok(1024));
-        assert_eq!(parse_size_param("test", "32768".to_string()), Ok(32768));
+    fn test_parse_size_with_unit_power_of_two() {
+        // Bytes only
+        let result = Config::parse_size_with_unit("test", "512");
+        assert_eq!(result.unwrap(), 512);
+        let result = Config::parse_size_with_unit("test", "1024");
+        assert_eq!(result.unwrap(), 1024);
+        let result = Config::parse_size_with_unit("test", "32768");
+        assert_eq!(result.unwrap(), 32768);
     }
 
     #[test]
-    fn test_parse_size_param_not_power_of_two() {
-        let result = parse_size_param("test", "2077".to_string());
+    fn test_parse_size_with_unit_not_power_of_two() {
+        let result = Config::parse_size_with_unit("test", "2077");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must be power of 2"));
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("must be power of two"));
+    }
+
+    #[test]
+    fn test_parse_size_with_unit_unknown_unit() {
+        let result = Config::parse_size_with_unit("test", "32XB");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Unknown unit"));
+    }
+
+    #[test]
+    fn test_parse_size_with_unit_invalid_format() {
+        let result = Config::parse_size_with_unit("test", "lol");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Invalid test format"));
     }
 }

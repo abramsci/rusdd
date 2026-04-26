@@ -1,6 +1,40 @@
 ## [0.0.x] - initial development phase
 
-### [0.0.x] - 2026-04-07
+### [0.0.5] - 2026-04-26
++ **Deliberate redesign** of the architecture with a cleaner logic:
+  + *Pass 0 (SCAN)* - read-only chunk-by-chunk analysis of the `--source`:
+    + Forms `Layout` as vector of contuous `Status` chunks - `Segment`: 
+      + Status can be: `Good` (readable), `Bad` (error read), `Ugly` (same-byte)
+    + Only prints source condition layout to STDOUT with `--inspection`
+    + Enables informed desicions before any copy/recovery (write) implemented
+  + *Truncation decision*:
+    + If `--truncate` -> analysing map for trailing `Ugly` chunks
+      + Calculate effective stop point = position after last non-`Ugly` chunk
+      + Preserve first `Ugly` chunk as an indicator (visible in destination)
+    + Else (default non-`--truncate`) effective stop point = source total size
+  - ==NOT IMPLEMENTED YET== *Pass 1 (COPY)*
+  - ==NOT IMPLEMENTED YET== *Pass 2 (RECOVER)*
+* **CLI rework**:
+  * Removed `--buffer-size` param (to avoid convoluted config)
+  * Added `--limit-size` param to hint physical drive capacity (default 32 GiB)
+  * Renamed `--smart` into `--truncate`
+  * Added `--inspect` mode (does not require / ignores `--destination`)
+  * Reworked `--sector-size` logic:
+    * If present - enables tool recovery mode (==NOT IMPLEMENTED YET==)
+    * If absent (default) - only Pass 0 (and Pass 1)
+  * Solidified reasoning on the rest of flags and parameters:
+    * `--truncate` solely controls truncation decision (effective stop point)
+    * `--chunk-size` has a default value (32 MiB) and acts as a key parameter:
+      * logical granularity of the imaging process (also imacts performance)
+      * pattern length for the consequetive same-byte `Ugly` blocks 
++ **Additional improvements**:
+  + Upgraded error-handling for `Location` struct
+  + "Divide-and-conquer" output stream strategy:
+    + STDOUT: `Config::display()` header + CSV-lines log of read errors
+    + STDERR: execution progress report, program warnings and errors
+    + This would allow to split and redirect info the way user prefers it
+
+### [0.0.4] - 2026-04-07
 * Rework of the core workflow function (`run()`)
 + Struct do describe regions where reading failed
 + Function signatures for three-pass imaging process at high-level:
@@ -8,8 +42,7 @@
   + `copy_realistic(..)` - chunk-sized pass (only signature)
   + `copy_forensic(..)` - sector-sized pass (only signature)
 * Fixed string with usage pattern in program welcome (2026-04-06 commit)
-
-### [0.0.4] - 2026-04-05
+#### 2026-04-05
 + Info display enhancements and some logic simplification:
   + `print_help()` moved into `display()` implementation for `HelpLevel`
   + `print_cli()` moved into `display()` implementation for `Config`
