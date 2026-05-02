@@ -1,3 +1,10 @@
+## [0.1.0] - imaging via traversal engine and layout inspection (chunk-by-chunk)
++ Updated [[README.me]].
++ Limited testing done on Windows manually.
++ A fully functional (but feature-limited) tool.
++ **Added [[DESIGN.md]] to better explain thought process**.
++ Complete architectural design encorporating many pivots and decisions.
+
 ## [0.0.x] - initial development phase
 
 ### [0.0.6] ("The Traversal Engine") - 2026-05-02 

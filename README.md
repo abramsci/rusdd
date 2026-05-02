@@ -1,7 +1,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)
 
-# rusdd - Really Useful Secure Digital Duplicator
+# rusdd - "Really Useful" Secure Digital (SD-card) Duplicator
 
 A simple tool for digitizing physical media into back-up images bit-by-bit.
 Can be used vice-versa to imprint back-up image file onto fresh SD-card.
@@ -16,4 +16,40 @@ Designed with the balance of simplicity and usability in mind:
 - ~~option to attempt sector-by-sector recovery for errored chunks~~
 - ~~option to compare destination vs source layout and content~~
 
-P.S. My first "learning via practical necessity" project in Rust.
+## Installation from source
+```
+git clone https://github.com/abramsci/rusdd
+cd rusdd
+cargo build --release
+```
+
+## Platform-specific notes
+
+### Windows
+- Requires **admin privileges** to access physical drives.
+* Use `\\.\PHYSICALDRIVE` syntax. Find the drive number via Disk Management.
++ Example: `target\release\rusdd.exe --truncate --source \\.\PHYSICALDRIVE3 --destination D:\backup.dd --chunk-size 64M`
+
+### Linux
+- Requires **root** or `disk` group membership for raw device access.
+* Use `/dev/sdX` syntax. Find the device via `lsblk` command.
++ Example: `sudo target/release/rusdd -s /dev/sdc -d backup.dd`
+
+### macOS (untested)
+- Use something like `/dev/rdiskN` (raw device)?
+- Example: `sudo target/release/rusdd -s /dev/rdisk2 -d backup.dd`
+
+## Output
+`rusdd` prints a CSV segment map to STDOUT and progress information to STDERR.
+Redirect the things you want to capture accordingly:
+`rusdd -s /dev/sd -d backup.dd 2>progress.log 1>layout.csv`
+
+
+
+## How it works
+See [DESIGN.md](docs/DESIGN.md) for architecture decisions and principles.
+Do not trust anything especially if it asks for root privileges.
+The tool actually can be used without these to simply copy files.
+Check the code and stay cyber-safe!
+
+*P.S. My first "learning via practical necessity" project in Rust.*

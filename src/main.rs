@@ -15,9 +15,9 @@
 //!
 //! Author: Sergei Abramenkov
 //! License: MIT
-//! Version: 0.0.6
+//! Version: 0.1.0
 //! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-const VERSION: &str = "0.0.6";
+const VERSION: &str = "0.1.0";
 
 use std::env;
 use std::fs::{File, OpenOptions};
@@ -63,6 +63,7 @@ impl HelpLevel {
             "rusdd - Really Useful Secure Digital Duplicator (ver.{})",
             VERSION
         );
+        println!("updates on: https://github.com/abramsci/rusdd");
         println!("\nUsage: rusdd [FLAGS] -s <SOURCE> -d <DEST> [PARAMS]");
         match self {
             HelpLevel::Usage => {
@@ -104,17 +105,14 @@ struct Config {
 impl Config {
     /// Program welcome message (a header in case of STDOUT redirection)
     fn display(&self) {
-        println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
-        println!(
-            "rusdd - Really Useful Secure Digital Duplicator (ver.{})",
-            VERSION
-        );
-        println!("IMAGING FROM: {}", self.source.display());
+        println!("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
+        println!("Really Useful Secure Digital Duplicator (v.{})", VERSION);
+        println!("  IMAGING FROM: {}", self.source.display());
         println!("  Chunk size: {}", format_byte_count(self.chunk_size));
         println!("  Inspection: {}", if self.inspect { "ON" } else { "OFF" });
         println!("  Truncation: {}", if self.truncate { "ON" } else { "OFF" });
-        println!("IMAGING INTO: {}", self.destination.display());
-        println!("***********************************************************");
+        println!("  IMAGING INTO: {}", self.destination.display());
+        println!("**************************************************");
     }
 
     fn parse_size_with_unit(name: &str, value: &str) -> io::Result<u64> {
@@ -946,7 +944,7 @@ fn workflow(cli: &Config) -> io::Result<()> {
     traverse(&mut src, &mut sketch, Some(&mut dst), None, cli.truncate)?;
 
     eprintln!(
-        "Imaging {} with {} segments and {} essence has completed.",
+        "\nImaging {} with {} segments and {} essence has completed.",
         cli.source.display(),
         sketch.segments.len(),
         sketch.essence
