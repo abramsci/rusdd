@@ -1,5 +1,45 @@
 ## [0.0.x] - initial development phase
 
+### [0.0.6] ("The Traversal Engine") - 2026-05-02 
++ ***Full architecture overhaul***
+* **Redesigned core workflow** around a single `traverse` function that
+  reads, classifies, and optionally copies in one pass:
+  + Stride-by-stride traversal with `read_stride` as the atomic unit
+  + Good strides written immediately; Ugly (uniform 4-byte pattern)
+    strides deferred via `PatternRun` and flushed in bulk
+  + Bad strides filled with `0xDEAFBEEB` placeholder for later recovery
+  + Single function serves Inspect, Copy, and Compare modes via
+    `Option<&mut File>` for the destination handle
+* **Rolling Adler-32 checksum** implemented via `RollingChecksum` trait:
+  + Per-segment checksum for Good segments (stored as `essence`)
+  + Global checksum for whole-source fast comparison
+  + Trait-based design allows swapping checksum algorithms later
+* **Improved segment model:**
+  + `Status::Ugly` now detects 4-byte repeating patterns (not 1-byte)
+  + `Layout::push` merges adjacent Good and Bad segments automatically;
+    Ugly segments merge only on matching pattern
+  + `truncation_point` correctly keeps one stride as intentional hint
+  + CSV output format standardized with 0x-prefixed hex, header lines,
+    and human-readable size column
+* **CLI changes:**
+  + Removed `--limit-size` parameter (heuristic EOF is sufficient)
+  + Added flag conflict detection at parse time
+* **New abstractions:**
+  + `RollingChecksum` trait with `Adler32` implementation
+  + `PatternRun` struct for deferred uniform-stride writes
+  + `format_byte_count` and `format_duration` helpers for readability
+  + `open_for_write` on `Location` (drive vs image semantics)
+* **Output improvements:**
+  + `run()` now reports total scanned, truncation point, skipped bytes,
+    trailing pattern, and effective image size
+  + CSV output extracted to free function `print_layout_csv`
+  + Progress reporting and errors on STDERR; layout CSV on STDOUT
+* **Removed:**
+  + `Layout::scan` method (replaced by `traverse`)
+  + `Segment.last` field (unused)
+  + 1-byte Ugly detection
+  + `--limit-size` CLI parameter
+
 ### [0.0.5] - 2026-04-26
 + **Deliberate redesign** of the architecture with a cleaner logic:
   + *Pass 0 (SCAN)* - read-only chunk-by-chunk analysis of the `--source`:
