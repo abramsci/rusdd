@@ -1,5 +1,6 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/Rust-2024%20Edition-orange?logo=rust)
+[![Crates.io Version](https://img.shields.io/crates/v/rusdd)](https://crates.io/crates/rusdd)
 
 # rusdd - "Really Useful" Secure Digital (SD-card) Duplicator
 
@@ -16,7 +17,17 @@ Designed with the balance of simplicity and usability in mind:
 - ~~option to attempt sector-by-sector recovery for errored chunks~~
 - ~~option to compare destination vs source layout and content~~
 
-## Installation from source
+## Download and try if you feel edgy (pre-build for Windows 10/11 x86_64)
+[0.1.0](https://github.com/abramsci/rusdd/releases/tag/v0.1.0)
+
+## Install via cargo (crates.io)
+Just install and try (requires crust toolchain installed)
+```
+cargo install rusdd
+```
+
+## Build source (GitHub repo)
+To get the code locally and play around with it
 ```
 git clone https://github.com/abramsci/rusdd
 cd rusdd
