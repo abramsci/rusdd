@@ -4,7 +4,7 @@
 # rusdd - "Really Useful" Secure Digital (SD-card) Duplicator
 
 A simple tool for digitizing physical media into back-up images bit-by-bit.
-Can be used vice-versa to imprint back-up image file onto fresh SD-card.
+~~Can be used vice-versa to imprint back-up image file onto fresh SD-card.~~
 Or alternatively as direct drive-to-drive or file-to-file copy/comparison.
 These use cases are basically abstracted as 'SOURCE -> DESTINATION'.
 Core workflow performs location inspection to build segmentation layout.
@@ -27,12 +27,12 @@ cargo build --release
 
 ### Windows
 - Requires **admin privileges** to access physical drives.
-* Use `\\.\PHYSICALDRIVE` syntax. Find the drive number via Disk Management.
-+ Example: `target\release\rusdd.exe --truncate --source \\.\PHYSICALDRIVE3 --destination D:\backup.dd --chunk-size 64M`
+* Use `\\.\PHYSICALDRIVEX` syntax. Find the drive number via Disk Management.
++ Example: `target\release\rusdd.exe --truncate --source \\.\PHYSICALDRIVE3 --destination D:\backup.dd --chunk-size 32K`
 
 ### Linux
 - Requires **root** or `disk` group membership for raw device access.
-* Use `/dev/sdX` syntax. Find the device via `lsblk` command.
+* Use `/dev/sdX` syntax. Find the device (or partition) via `lsblk` command.
 + Example: `sudo target/release/rusdd -s /dev/sdc -d backup.dd`
 
 ### macOS (untested)
@@ -47,9 +47,9 @@ Redirect the things you want to capture accordingly:
 
 
 ## How it works
-See [DESIGN.md](docs/DESIGN.md) for architecture decisions and principles.
+See [DESIGN.md](doc/DESIGN.md) for architecture decisions and principles.
 Do not trust anything especially if it asks for root privileges.
-The tool actually can be used without these to simply copy files.
-Check the code and stay cyber-safe!
+The tool actually can be used without these to simply copy or inspect files.
+In any case - check the code and stay cyber-safe!
 
 *P.S. My first "learning via practical necessity" project in Rust.*
