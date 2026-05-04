@@ -18,7 +18,7 @@ Designed with the balance of simplicity and usability in mind:
 - ~~option to compare destination vs source layout and content~~
 
 ## Download and try if you feel edgy (pre-build for Windows 10/11 x86_64)
-[0.1.0](https://github.com/abramsci/rusdd/releases/tag/v0.1.0)
+[0.1.0](https://github.com/abramsci/rusdd/releases/tag/v0.1.0) - core functionality: imaging via traversal engine and layout inspection (chunk-by-chunk)
 
 ## Install via cargo (crates.io)
 Just install and try (requires crust toolchain installed)
@@ -26,7 +26,7 @@ Just install and try (requires crust toolchain installed)
 cargo install rusdd
 ```
 
-## Build source (GitHub repo)
+## Build from source (this GitHub repo)
 To get the code locally and play around with it
 ```
 git clone https://github.com/abramsci/rusdd
